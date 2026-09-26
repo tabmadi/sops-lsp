@@ -1,6 +1,9 @@
-use zed_extension_api::{self as zed, LanguageServerId, Result};
+use zed_extension_api::settings::LspSettings;
+use zed_extension_api::{self as zed, LanguageServerId, Result, serde_json};
 
 const SERVER_BINARY: &str = "sops-lsp";
+/// The id `extension.toml` registers, which is also the key under `lsp` in Zed's settings.
+const SERVER_NAME: &str = "sops-lsp";
 const REPOSITORY: &str = "tabmadi/sops-lsp";
 
 struct SopsExtension {
@@ -96,13 +99,44 @@ impl zed::Extension for SopsExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
+        // `lsp.sops-lsp.binary` overrides the server itself, the way every other Zed language
+        // server is overridden.
+        let configured = LspSettings::for_worktree(SERVER_NAME, worktree)
+            .ok()
+            .and_then(|settings| settings.binary);
         Ok(zed::Command {
-            command: self.server_binary_path(language_server_id, worktree)?,
-            args: vec![],
+            command: match configured.as_ref().and_then(|binary| binary.path.clone()) {
+                Some(path) => path,
+                None => self.server_binary_path(language_server_id, worktree)?,
+            },
+            args: configured
+                .and_then(|binary| binary.arguments)
+                .unwrap_or_default(),
             // The server shells out to `sops`, which reads SOPS_AGE_KEY_FILE, GPG_TTY and the
             // rest of the caller's key configuration from here.
             env: worktree.shell_env(),
         })
+    }
+
+    /// `sops` is often absent from the PATH a GUI editor inherits, and a version-managed install
+    /// is reachable only through a shim. What the worktree can resolve is the default; the
+    /// setting is what overrides it.
+    fn language_server_initialization_options(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<serde_json::Value>> {
+        let configured = LspSettings::for_worktree(SERVER_NAME, worktree)
+            .ok()
+            .and_then(|settings| settings.initialization_options);
+        if let Some(options) = configured
+            && options.pointer("/sops/path").is_some()
+        {
+            return Ok(Some(options));
+        }
+        Ok(worktree
+            .which("sops")
+            .map(|path| serde_json::json!({ "sops": { "path": path } })))
     }
 }
 

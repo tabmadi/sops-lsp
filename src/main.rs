@@ -20,13 +20,19 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 struct Backend {
     client: Client,
+    /// The `sops` binary, from `initialization_options`. It is not always on PATH: a
+    /// version-managed install is reachable only through a shim or an absolute path.
+    sops: Mutex<String>,
     /// The ciphertext as the editor holds it. Hover reads the key names from here rather than
     /// from disk, so an unsaved edit does not misattribute a value.
     documents: Mutex<HashMap<Uri, String>>,
 }
 
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        if let Some(path) = sops_path(params.initialization_options.as_ref()) {
+            *self.sops.lock().expect("sops lock") = path;
+        }
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
                 name: env!("CARGO_PKG_NAME").to_string(),
@@ -108,7 +114,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let value = match decrypt::value_of(&uri, &key, line_number) {
+        let sops = self.sops.lock().expect("sops lock").clone();
+        let value = match decrypt::value_of(&sops, &uri, &key, line_number) {
             Ok(Some(value)) => format!("```\n{value}\n```"),
             Ok(None) => return Ok(None),
             // The reason a decrypt failed is the useful half — a missing key, a stale recipient.
@@ -124,6 +131,12 @@ impl LanguageServer for Backend {
             range: None,
         }))
     }
+}
+
+/// The `sops.path` an editor passed in `initialization_options`.
+fn sops_path(options: Option<&serde_json::Value>) -> Option<String> {
+    let path = options?.get("sops")?.get("path")?.as_str()?.trim();
+    (!path.is_empty()).then(|| path.to_string())
 }
 
 /// A zero-width range at the start of a document renders as nothing an editor's reader can
@@ -183,6 +196,7 @@ fn in_sops_block(lines: &[&str], line_number: usize) -> bool {
 async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
+        sops: Mutex::new("sops".to_string()),
         documents: Mutex::new(HashMap::new()),
     });
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
@@ -192,7 +206,7 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sops_encrypted, key_at};
+    use super::{is_sops_encrypted, key_at, sops_path};
 
     const ENCRYPTED: &str = concat!(
         "database_url: ENC[AES256_GCM,data:abc,type:str]\n",
@@ -229,6 +243,22 @@ mod tests {
         // `nested:` opens a mapping, and the blank tail is past the end.
         assert_eq!(key_at(ENCRYPTED, 1), None);
         assert_eq!(key_at(ENCRYPTED, 99), None);
+    }
+
+    #[test]
+    fn reads_the_configured_sops_path() {
+        let options = serde_json::json!({"sops": {"path": "/opt/bin/sops"}});
+        assert_eq!(sops_path(Some(&options)).as_deref(), Some("/opt/bin/sops"));
+    }
+
+    #[test]
+    fn falls_back_when_no_path_is_configured() {
+        assert_eq!(sops_path(None), None);
+        assert_eq!(sops_path(Some(&serde_json::json!({}))), None);
+        assert_eq!(
+            sops_path(Some(&serde_json::json!({"sops": {"path": "  "}}))),
+            None
+        );
     }
 
     #[test]

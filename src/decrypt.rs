@@ -20,9 +20,14 @@ fn cache() -> &'static Mutex<Cache> {
 
 /// The plaintext `key` assigns to on `line_number`, or `None` when the decrypted document does
 /// not carry that key unambiguously. Reporting the wrong value is worse than reporting none.
-pub fn value_of(uri: &Uri, key: &str, line_number: usize) -> Result<Option<String>, String> {
+pub fn value_of(
+    sops: &str,
+    uri: &Uri,
+    key: &str,
+    line_number: usize,
+) -> Result<Option<String>, String> {
     let path = file_path(uri).ok_or("not a local file")?;
-    let lines = decrypted(&path)?;
+    let lines = decrypted(sops, &path)?;
 
     let same_line = lines.get(line_number).and_then(|line| value_for(line, key));
     if same_line.is_some() {
@@ -44,7 +49,7 @@ pub fn forget(uri: &Uri) {
 }
 
 /// The decrypted document, from the cache when the file has not changed since.
-fn decrypted(path: &str) -> Result<Vec<String>, String> {
+fn decrypted(sops: &str, path: &str) -> Result<Vec<String>, String> {
     let mtime = modified(path);
     if let Some((cached_mtime, lines)) = cache().lock().expect("cache lock").get(path)
         && *cached_mtime == mtime
@@ -52,11 +57,19 @@ fn decrypted(path: &str) -> Result<Vec<String>, String> {
         return Ok(lines.clone());
     }
 
-    let output = Command::new("sops")
-        .arg("decrypt")
-        .arg(path)
-        .output()
-        .map_err(|err| format!("could not run sops: {err}"))?;
+    // The file's own directory, not the editor's: `.sops.yaml` is discovered relative to the
+    // file, and a version-managed `sops` shim resolves its version the same way.
+    let working_dir = std::path::Path::new(path).parent();
+    let mut command = Command::new(sops);
+    if let Some(dir) = working_dir {
+        command.current_dir(dir);
+    }
+    let output = command.arg("decrypt").arg(path).output().map_err(|err| {
+        format!(
+            "could not run `{sops}`: {err}. Set `lsp.sops-lsp.initialization_options.sops.path` \
+                 to the binary — a version-managed install needs a shim or an absolute path"
+        )
+    })?;
     if !output.status.success() {
         return Err(first_meaningful_line(&String::from_utf8_lossy(
             &output.stderr,
