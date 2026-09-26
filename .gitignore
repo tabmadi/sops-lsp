@@ -1,6 +1,8 @@
 # Rust
 /target/
 /editors/zed/target/
+# Zed writes the compiled extension here on `install dev extension`.
+/editors/zed/extension.wasm
 
 # JetBrain
 .idea/
