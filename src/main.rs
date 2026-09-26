@@ -7,7 +7,8 @@
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticSeverity, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
-    Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    Position, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -40,7 +41,7 @@ impl LanguageServer for Backend {
         let doc = params.text_document;
         let diagnostics = if is_sops_encrypted(&doc.text) {
             vec![Diagnostic {
-                range: Range::default(),
+                range: first_line(&doc.text),
                 severity: Some(DiagnosticSeverity::INFORMATION),
                 source: Some(env!("CARGO_PKG_NAME").to_string()),
                 message: "SOPS-encrypted file.".to_string(),
@@ -52,6 +53,16 @@ impl LanguageServer for Backend {
         self.client
             .publish_diagnostics(doc.uri, diagnostics, Some(doc.version))
             .await;
+    }
+}
+
+/// A zero-width range at the start of a document renders as nothing an editor's reader can
+/// see, so the marker spans the first line.
+fn first_line(text: &str) -> Range {
+    let end = text.lines().next().unwrap_or_default().chars().count();
+    Range {
+        start: Position::new(0, 0),
+        end: Position::new(0, u32::try_from(end).unwrap_or(u32::MAX)),
     }
 }
 
