@@ -1,19 +1,28 @@
 //! A language server for SOPS-encrypted files.
 //!
-//! The editor never sees the plaintext on disk: the server decrypts into the buffer over
-//! `workspace/applyEdit` and re-encrypts on the way out. Zed advertises `did_save` and not
-//! `will_save_wait_until`, so the write direction is unfinished here — see README.md.
+//! Decrypted values are shown, never written. Zed advertises `did_save` and not
+//! `will_save_wait_until`, so a server cannot re-encrypt a buffer before the editor flushes it
+//! to disk; until that lands, this server does not touch buffer contents at all — see README.md.
+
+mod decrypt;
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
-    Diagnostic, DiagnosticSeverity, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
-    Position, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, MarkupContent, MarkupKind, Position, Range,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 struct Backend {
     client: Client,
+    /// The ciphertext as the editor holds it. Hover reads the key names from here rather than
+    /// from disk, so an unsaved edit does not misattribute a value.
+    documents: Mutex<HashMap<Uri, String>>,
 }
 
 impl LanguageServer for Backend {
@@ -27,6 +36,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             offset_encoding: None,
@@ -39,12 +49,16 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
+        self.documents
+            .lock()
+            .expect("documents lock")
+            .insert(doc.uri.clone(), doc.text.clone());
         let diagnostics = if is_sops_encrypted(&doc.text) {
             vec![Diagnostic {
                 range: first_line(&doc.text),
                 severity: Some(DiagnosticSeverity::INFORMATION),
                 source: Some(env!("CARGO_PKG_NAME").to_string()),
-                message: "SOPS-encrypted file.".to_string(),
+                message: "SOPS-encrypted. Hover a value to read it.".to_string(),
                 ..Default::default()
             }]
         } else {
@@ -53,6 +67,62 @@ impl LanguageServer for Backend {
         self.client
             .publish_diagnostics(doc.uri, diagnostics, Some(doc.version))
             .await;
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        // Full sync: the last change carries the whole document.
+        if let Some(change) = params.content_changes.into_iter().next_back() {
+            self.documents
+                .lock()
+                .expect("documents lock")
+                .insert(params.text_document.uri, change.text);
+        }
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        self.documents
+            .lock()
+            .expect("documents lock")
+            .remove(&params.text_document.uri);
+        decrypt::forget(&params.text_document.uri);
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let position = params.text_document_position_params;
+        let uri = position.text_document.uri;
+        let line_number = position.position.line as usize;
+
+        let Some(text) = self
+            .documents
+            .lock()
+            .expect("documents lock")
+            .get(&uri)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if !is_sops_encrypted(&text) {
+            return Ok(None);
+        }
+        let Some(key) = key_at(&text, line_number) else {
+            return Ok(None);
+        };
+
+        let value = match decrypt::value_of(&uri, &key, line_number) {
+            Ok(Some(value)) => format!("```\n{value}\n```"),
+            Ok(None) => return Ok(None),
+            // The reason a decrypt failed is the useful half — a missing key, a stale recipient.
+            // It never contains file content.
+            Err(reason) => format!("**sops**: {reason}"),
+        };
+
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: None,
+        }))
     }
 }
 
@@ -76,9 +146,45 @@ fn is_sops_encrypted(text: &str) -> bool {
     has_block && text.contains("mac")
 }
 
+/// The key a line assigns to, for YAML, JSON and TOML alike. A line inside the `sops` metadata
+/// block yields nothing: those values are not secrets and reporting them as such teaches the
+/// reader the wrong thing.
+fn key_at(text: &str, line_number: usize) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line = lines.get(line_number)?;
+    if in_sops_block(&lines, line_number) {
+        return None;
+    }
+    let (raw_key, rest) = line.split_once(':')?;
+    if rest.trim().is_empty() {
+        return None;
+    }
+    let key = raw_key.trim().trim_matches(['"', '\'']);
+    if key.is_empty() || key.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(key.to_string())
+}
+
+/// Whether a line sits under the top-level `sops:` key, by indentation.
+fn in_sops_block(lines: &[&str], line_number: usize) -> bool {
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    if indent(lines[line_number]) == 0 {
+        return lines[line_number].trim_start().starts_with("sops:");
+    }
+    lines[..line_number]
+        .iter()
+        .rev()
+        .find(|line| !line.trim().is_empty() && indent(line) == 0)
+        .is_some_and(|line| line.trim_start().starts_with("sops:"))
+}
+
 #[tokio::main]
 async fn main() {
-    let (service, socket) = LspService::new(|client| Backend { client });
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        documents: Mutex::new(HashMap::new()),
+    });
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
         .serve(service)
         .await;
@@ -86,19 +192,49 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::is_sops_encrypted;
+    use super::{is_sops_encrypted, key_at};
+
+    const ENCRYPTED: &str = concat!(
+        "database_url: ENC[AES256_GCM,data:abc,type:str]\n",
+        "nested:\n",
+        "    smtp_password: ENC[AES256_GCM,data:def,type:str]\n",
+        "sops:\n",
+        "    age: []\n",
+        "    mac: ENC[AES256_GCM,data:ghi,type:str]\n",
+        "    version: 3.13.1\n",
+    );
 
     #[test]
     fn recognises_an_encrypted_document() {
-        let yaml = "key: ENC[AES256_GCM,data:x]\nsops:\n    mac: ENC[AES256_GCM,data:y]\n";
-        assert!(is_sops_encrypted(yaml));
-        let json = "{\"key\":\"ENC[...]\",\"sops\":{\"mac\":\"ENC[...]\"}}";
-        assert!(is_sops_encrypted(json));
+        assert!(is_sops_encrypted(ENCRYPTED));
+        assert!(is_sops_encrypted(
+            "{\"a\":\"ENC[x]\",\"sops\":{\"mac\":\"ENC[y]\"}}"
+        ));
     }
 
     #[test]
     fn leaves_plain_documents_alone() {
         assert!(!is_sops_encrypted("key: value\n"));
         assert!(!is_sops_encrypted("# How to use sops with mac keychains\n"));
+    }
+
+    #[test]
+    fn reads_the_key_a_line_assigns_to() {
+        assert_eq!(key_at(ENCRYPTED, 0).as_deref(), Some("database_url"));
+        assert_eq!(key_at(ENCRYPTED, 2).as_deref(), Some("smtp_password"));
+    }
+
+    #[test]
+    fn ignores_lines_that_assign_nothing() {
+        // `nested:` opens a mapping, and the blank tail is past the end.
+        assert_eq!(key_at(ENCRYPTED, 1), None);
+        assert_eq!(key_at(ENCRYPTED, 99), None);
+    }
+
+    #[test]
+    fn ignores_the_sops_metadata_block() {
+        for line in 3..=6 {
+            assert_eq!(key_at(ENCRYPTED, line), None, "line {line} is metadata");
+        }
     }
 }
