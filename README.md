@@ -8,7 +8,7 @@ Editing a SOPS file today means `sops edit` in a terminal, or decrypting to a fi
 
 ## Status
 
-Early. The server recognises a SOPS-encrypted document and reports it; decryption and re-encryption are the next milestones.
+Early. Hovering a value in a SOPS-encrypted document shows its plaintext. Nothing is written: the document is not marked, not edited, and not decrypted to disk.
 
 The write direction has an upstream dependency worth knowing before you file a bug. LSP's `textDocument/willSaveWaitUntil` is the request that lets a server rewrite a buffer *before* the editor writes it to disk, and it is the only way to re-encrypt with no plaintext ever reaching the filesystem. Zed declares `did_save` and not `will_save_wait_until` ([`crates/lsp/src/lsp.rs`](https://github.com/zed-industries/zed/blob/main/crates/lsp/src/lsp.rs)), so until that lands, any save path has a window where plaintext exists on disk. This project will not ship a design that hides that window rather than closing it.
 

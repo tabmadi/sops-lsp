@@ -11,15 +11,14 @@ use std::sync::Mutex;
 
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, MarkupContent, MarkupKind, Position, Range,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    MarkupContent, MarkupKind, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, Uri,
 };
-use tower_lsp_server::{Client, LanguageServer, LspService, Server};
+use tower_lsp_server::{LanguageServer, LspService, Server};
 
 struct Backend {
-    client: Client,
     /// The `sops` binary, from `initialization_options`. It is not always on PATH: a
     /// version-managed install is reachable only through a shim or an absolute path.
     sops: Mutex<String>,
@@ -53,26 +52,14 @@ impl LanguageServer for Backend {
         Ok(())
     }
 
+    /// Recording the buffer is all an open does. An encrypted file is not a defect, so nothing
+    /// here publishes a diagnostic against it.
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
         self.documents
             .lock()
             .expect("documents lock")
-            .insert(doc.uri.clone(), doc.text.clone());
-        let diagnostics = if is_sops_encrypted(&doc.text) {
-            vec![Diagnostic {
-                range: first_line(&doc.text),
-                severity: Some(DiagnosticSeverity::INFORMATION),
-                source: Some(env!("CARGO_PKG_NAME").to_string()),
-                message: "SOPS-encrypted. Hover a value to read it.".to_string(),
-                ..Default::default()
-            }]
-        } else {
-            vec![]
-        };
-        self.client
-            .publish_diagnostics(doc.uri, diagnostics, Some(doc.version))
-            .await;
+            .insert(doc.uri, doc.text);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -150,16 +137,6 @@ fn expand_home(path: &str) -> String {
     }
 }
 
-/// A zero-width range at the start of a document renders as nothing an editor's reader can
-/// see, so the marker spans the first line.
-fn first_line(text: &str) -> Range {
-    let end = text.lines().next().unwrap_or_default().chars().count();
-    Range {
-        start: Position::new(0, 0),
-        end: Position::new(0, u32::try_from(end).unwrap_or(u32::MAX)),
-    }
-}
-
 /// A SOPS file carries a `sops` metadata block holding a `mac`. Both markers are required: a
 /// document that merely mentions sops is a document about SOPS, not an encrypted one.
 fn is_sops_encrypted(text: &str) -> bool {
@@ -205,8 +182,7 @@ fn in_sops_block(lines: &[&str], line_number: usize) -> bool {
 
 #[tokio::main]
 async fn main() {
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
+    let (service, socket) = LspService::new(|_client| Backend {
         sops: Mutex::new("sops".to_string()),
         documents: Mutex::new(HashMap::new()),
     });
