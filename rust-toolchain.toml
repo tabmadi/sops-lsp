@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+# The Zed extension in editors/zed compiles to WebAssembly; the server is native.
+targets = ["wasm32-wasip2"]

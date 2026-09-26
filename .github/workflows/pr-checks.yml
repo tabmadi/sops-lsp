@@ -33,5 +33,17 @@ jobs:
       - name: Validate PR title
         run: mise x cocogitto -- cog verify "${{ github.event.pull_request.title }}"
 
+      # rust-toolchain.toml resolves on the first cargo call: the pinned channel, the
+      # components, and the wasm32-wasip2 target the extension builds against.
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            editors/zed -> editors/zed/target
+
       - name: Lint
         run: mise run lint
+
+      - name: Test
+        run: mise run test

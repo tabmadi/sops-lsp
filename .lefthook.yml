@@ -1,7 +1,10 @@
+# Every command runs through `mise exec --`: cog is installed by mise and is not on PATH
+# otherwise, so a bare call works for whoever has mise active in their shell and fails with
+# exit 127 for everyone else — including an IDE's commit dialog and an agent.
 commit-msg:
   commands:
     cog:
-      run: cog verify --ignore-merge-commits --file {1}
+      run: mise exec -- cog verify --ignore-merge-commits --file {1}
 
 pre-commit:
   commands:
@@ -11,4 +14,4 @@ pre-commit:
 pre-push:
   commands:
     cog:
-      run: cog check --ignore-merge-commits
+      run: mise exec -- cog check --ignore-merge-commits

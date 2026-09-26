@@ -1,120 +1,55 @@
-# 🚀 GitHub Project Template
+# sops-lsp
+
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-A comprehensive GitHub repository template that provides the essential files and structure needed for any project, regardless of programming language. This template includes standard community health files, GitHub issue templates, and pull request templates to help you get started quickly with best practices for open source projects.
+A language server for [SOPS](https://github.com/getsops/sops)-encrypted files, and a [Zed](https://zed.dev) extension that runs it.
 
-## ✨ Features
+Editing a SOPS file today means `sops edit` in a terminal, or decrypting to a file you have to remember to delete. This server moves that into the editor: the ciphertext in the buffer is replaced with plaintext over `workspace/applyEdit`, and the encryption stays where it belongs — in the `sops` binary, which this server shells out to and never reimplements.
 
-- 🌍 **Language Agnostic**: Works for any programming language or project type
-- 🏥 **Community Health Files**: Includes standard files for project governance
-- 🤝 **GitHub Integration**: Pre-configured issue and pull request templates
-- 🔧 **Modern Tooling**: Pre-configured development workflow tools including Lefthook, Mise, Cocogitto, and Act
-- 📁 **Structured**: Organized project layout with best practices
+## Status
 
-## 🚀 Quick Start
+Early. The server recognises a SOPS-encrypted document and reports it; decryption and re-encryption are the next milestones.
 
-### Prerequisites
+The write direction has an upstream dependency worth knowing before you file a bug. LSP's `textDocument/willSaveWaitUntil` is the request that lets a server rewrite a buffer *before* the editor writes it to disk, and it is the only way to re-encrypt with no plaintext ever reaching the filesystem. Zed declares `did_save` and not `will_save_wait_until` ([`crates/lsp/src/lsp.rs`](https://github.com/zed-industries/zed/blob/main/crates/lsp/src/lsp.rs)), so until that lands, any save path has a window where plaintext exists on disk. This project will not ship a design that hides that window rather than closing it.
 
-- [Mise](https://mise.jdx.dev/) - Tool version manager
-- [Docker](https://www.docker.com/) - Required for running GitHub Actions locally with Act
+The decrypt direction needs nothing from upstream: Zed already declares `apply_edit` and handles server-to-client `workspace/applyEdit`.
 
-### Installation
+## Install
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/TheRealZurvan/github-project-template.git
-   cd github-project-template
-   ```
+### As a Zed dev extension
 
-2. **Setup environment**:
-   ```bash
-   # Install mise (if not already installed)
-   curl https://mise.run | sh
-   
-   # Install configured tools (lefthook, cocogitto, act)
-   mise install
-   
-   # Set up Git hooks
-   lefthook install
-   ```
-
-## 🏃‍♂️ Usage
-
-### Local CI Testing (Act)
-
-If you have Docker installed, you can run GitHub Actions locally using `act`. This template includes a pre-configured mise task for testing pull request workflows:
-
-```bash
-mise run act-pr
+```sh
+git clone https://github.com/tabmadi/sops-lsp
+cd sops-lsp
+cargo build --release          # the server
 ```
 
-This command uses `.github/act/pull_request.json` to simulate a pull request event.
+Put the binary on `PATH` (`target/release/sops-lsp`), then in Zed run `zed: install dev extension` and select `editors/zed`.
 
-## 🛠️ Development
+The extension prefers a `sops-lsp` on `PATH` over anything it has downloaded, so a working build always wins. With no binary on `PATH` it fetches the matching release asset instead.
 
-### 🔧 Development Tools
+`sops` itself must be on `PATH`, with your keys configured as usual — the extension passes the worktree's shell environment through, so `SOPS_AGE_KEY_FILE` and friends reach the server.
 
-- **Mise**: Ensures consistent tool versions (cocogitto, lefthook, act) across different environments.
-- **Lefthook**: Git hooks manager that runs checks before commits and pushes.
-- **Cocogitto**: Enforces Conventional Commits and automates changelog generation.
-- **Act**: Runs GitHub Actions locally for faster feedback loops.
+## Development
 
-### 🪝 Git Hooks & Conventional Commits
-
-This project uses **Lefthook** for Git hooks and follows **Conventional Commits**.
-- **Commit-msg**: Validates commit messages using `cog verify`.
-- **Pre-push**: Runs checks before pushing to the remote repository.
-
-## 📁 Project Structure
-
-```
-.
-├── .github/
-│   ├── ISSUE_TEMPLATE/    # Structured issue templates
-│   └── act/               # Local CI testing configuration
-├── scripts/               # Helper scripts
-├── LICENSE                # Apache License 2.0
-├── README.md              # You are here! 📍
-├── SECURITY.md            # Security policy
-└── mise.toml              # Tool versions configuration
+```sh
+mise run setup      # git hooks
+mise run check      # format, lint, test
+mise run build      # the server binary
+mise run lint       # clippy over both crates, including the wasm target
 ```
 
-## ✏️ Customization Guide
+Rust is pinned by [`rust-toolchain.toml`](rust-toolchain.toml) rather than by mise, because rustup is what Zed invokes when it builds the extension.
 
-### README.md
-- Replace this content with information about your project.
-- Include sections such as Project description, Usage examples, and API documentation.
+## Layout
 
-### LICENSE
-- The template includes the Apache License 2.0.
-- Update the copyright notice or replace the file with your preferred license.
+| Path | What it is |
+| --- | --- |
+| `src/` | the language server, a native binary |
+| `editors/zed/` | the Zed extension: a wasm32-wasip2 cdylib that locates and starts the server |
 
-### Community Files
-- **CODE_OF_CONDUCT.md**: Update the contact information in the "Enforcement" section.
-- **SECURITY.md**: Update contact details and supported versions policy.
+`editors/zed` is excluded from the workspace and carries its own lockfile, because Zed builds it on its own terms.
 
-### Templates
-- **Issue Templates**: Modify fields, labels, and descriptions in `.github/ISSUE_TEMPLATE/`.
-- **Pull Request Template**: Adjust the checklist items in `.github/PULL_REQUEST_TEMPLATE.md`.
+## Licence
 
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the project
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 🔒 Security
-
-Please see [SECURITY.md](SECURITY.md) for our security policy.
-
-## 📄 License
-
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
----
-
-**Happy coding! 🎉** If you find this template useful, please give it a ⭐️
+Apache-2.0.

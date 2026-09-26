@@ -1,0 +1,27 @@
+[package]
+name = "sops-lsp"
+version = "0.1.0"
+edition = "2024"
+description = "A language server for SOPS-encrypted files"
+repository = "https://github.com/tabmadi/sops-lsp"
+license = "Apache-2.0"
+
+# The Zed extension is a wasm32-wasip2 cdylib that Zed builds on its own, with its own
+# lockfile. A workspace member would force this workspace's target and profile settings
+# onto that build.
+[workspace]
+members = []
+exclude = ["editors/zed"]
+
+[dependencies]
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
+tower-lsp-server = "0.23"
+
+[lints.rust]
+warnings = { level = "deny", priority = -2 }
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# The trait declares these methods async; an impl that has nothing to await still has to
+# match the signature.
+unused_async_trait_impl = "allow"

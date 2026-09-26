@@ -4,23 +4,33 @@ Tool-agnostic guide for any coding agent (Codex, Cursor, Claude Code, or another
 
 ## The one rule that outranks this file
 
-**Humans are the first developers. [README.md](README.md) outranks this file.** It is the human-facing description of what this template provides and how to use it. This file holds only agent-specific operational hints: how to navigate, build, and run the repo.
+**Humans are the first developers. [README.md](README.md) outranks this file.** It holds what this project is, its status, and the upstream constraint that shapes the design. This file holds only operational hints: how to navigate, build, and run the repo.
 
 ## What this repo is
 
-A language-agnostic GitHub repository scaffold: community health files, issue and PR templates, and the shared toolchain every other template in the set builds on. It carries no application code, and a project generated from it adds its own.
+A language server for SOPS-encrypted files, plus the Zed extension that starts it. Two crates:
 
-- **Everything here is inherited wholesale** by every repo generated from it. A line that is right for one project and wrong for the next does not belong in this repo.
-- **The `format`, `lint`, and `test` tasks in `mise.toml` are `echo 'Ok'` on purpose.** They are the contract a generated project fills in with real commands. Keep the task names; never delete a task to avoid implementing it, and never add a language-specific tool here.
-- **Adding a tool means adding it to `mise.toml`**, pinned to an exact version. An unpinned tool, or one assumed present on `PATH`, is a broken generated project on someone else's machine.
+| Path | Target | Built by |
+| --- | --- | --- |
+| `src/` | native binary `sops-lsp` | `cargo build`, and the release workflow for each platform |
+| `editors/zed/` | `wasm32-wasip2` cdylib | Zed itself, on `zed: install dev extension` |
+
+`editors/zed` is excluded from the workspace and has its own lockfile. Every task that spans both crates names both — a bare `cargo` command at the root does not reach the extension.
+
+## The rules that hold this design together
+
+- **Never reimplement SOPS.** The server shells out to the `sops` binary. Key discovery, MAC verification, and the file format are its problem, and a second implementation of any of them is a security defect waiting to be found.
+- **Plaintext does not touch the disk.** Decryption goes into the buffer over `workspace/applyEdit`. A design that writes a plaintext sidecar, or lets the editor flush plaintext and re-encrypts afterwards, is rejected: the honest answer until Zed supports `textDocument/willSaveWaitUntil` is that the write direction is unfinished, and README.md says so.
+- **The server never logs a decrypted value**, including at debug level, and including in an error it returns to the client.
+- **Anything added to `[tools]` in `mise.toml` is pinned to an exact version.** Rust is the exception and is pinned by `rust-toolchain.toml`, because rustup is what Zed invokes.
 
 ## Working in the repo
 
 - The task runner is `mise` (root `mise.toml`); commands are `mise run <task>`. `mise run setup` installs the git hooks.
-- Tools are pinned and installed by `mise`; a shell with mise inactive resolves a bare tool call (`lefthook`, `cog`, `act`, …) from `PATH`, at an unpinned version. `mise run <task>` activates the toolchain for that task's duration, a bare tool call does not.
-- `mise run check` runs format, lint, and test together; `mise run pre-commit` is what the git hook calls.
+- `mise run check` runs format, lint, and test together; `mise run pre-commit` is what the git hook calls. `mise run lint` covers both crates, including a clippy pass against the wasm target.
+- Lint policy lives in `Cargo.toml`'s `[lints]` tables, not in the task or in CI flags. A lint exception goes there with the reason, so `cargo clippy` alone reproduces CI.
+- CI is [.github/workflows/pr-checks.yml](.github/workflows/pr-checks.yml): PR title validated as a Conventional Commit, then `mise run lint` and `mise run test`. [.github/workflows/release.yml](.github/workflows/release.yml) builds the four release assets on a `v*` tag, and the extension resolves them by name — renaming an asset breaks installation for everyone.
 - `mise run act` replays the pull request workflow locally with [act](https://github.com/nektos/act). It reads secrets from `.env` — copy `.env.example` first.
-- CI is [.github/workflows/pr-checks.yml](.github/workflows/pr-checks.yml). It validates the PR title as a Conventional Commit and runs `mise run lint`. A change to a task's meaning is a change to CI's meaning; check both.
 
 ## Commits
 

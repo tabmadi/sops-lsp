@@ -2,18 +2,37 @@
 lefthook = "2.0.11"
 cocogitto = "6.5.0"
 act = "0.2.83"
+# The server shells out to sops rather than reimplementing any of it.
+sops = "3.13.1"
+
+# Rust is not pinned here. rust-toolchain.toml pins the channel, the components and the
+# wasm32-wasip2 target, and rustup is what Zed itself invokes when it builds the extension —
+# a second toolchain under mise would be the one the editor never uses.
 
 [tasks.setup]
 run = "lefthook install"
 
 [tasks.format]
-run = "echo 'Ok'"
+run = ["cargo fmt", "cargo fmt --manifest-path editors/zed/Cargo.toml"]
 
 [tasks.lint]
-run = "echo 'Ok'"
+run = [
+  "cargo fmt --check",
+  "cargo fmt --check --manifest-path editors/zed/Cargo.toml",
+  "cargo clippy --all-targets",
+  "cargo clippy --manifest-path editors/zed/Cargo.toml --target wasm32-wasip2",
+]
 
 [tasks.test]
-run = "echo 'Ok'"
+run = "cargo test"
+
+[tasks.build]
+description = "The server binary, as released."
+run = "cargo build --release"
+
+[tasks."build:extension"]
+description = "What Zed compiles when it installs the dev extension."
+run = "cargo build --manifest-path editors/zed/Cargo.toml --target wasm32-wasip2 --release"
 
 [tasks.check]
 depends = ["format", "lint", "test"]

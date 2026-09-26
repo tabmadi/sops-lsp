@@ -1,3 +1,7 @@
+# Rust
+/target/
+/editors/zed/target/
+
 # JetBrain
 .idea/
 .run/

@@ -1,0 +1,11 @@
+id = "sops-lsp"
+name = "SOPS"
+description = "Work with SOPS-encrypted files without decrypting them to disk by hand."
+version = "0.1.0"
+schema_version = 1
+authors = ["Tab <tabmadi@proton.me>"]
+repository = "https://github.com/tabmadi/sops-lsp"
+
+[language_servers.sops-lsp]
+name = "SOPS"
+languages = ["YAML", "JSON", "TOML"]
