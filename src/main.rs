@@ -133,10 +133,21 @@ impl LanguageServer for Backend {
     }
 }
 
-/// The `sops.path` an editor passed in `initialization_options`.
+/// The `sops.path` an editor passed in `initialization_options`. Nothing between a settings file
+/// and this process expands `~`, and a path written by hand is where a `~` appears.
 fn sops_path(options: Option<&serde_json::Value>) -> Option<String> {
     let path = options?.get("sops")?.get("path")?.as_str()?.trim();
-    (!path.is_empty()).then(|| path.to_string())
+    (!path.is_empty()).then(|| expand_home(path))
+}
+
+fn expand_home(path: &str) -> String {
+    let Some(rest) = path.strip_prefix("~/") else {
+        return path.to_string();
+    };
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => format!("{}/{rest}", home.trim_end_matches('/')),
+        _ => path.to_string(),
+    }
 }
 
 /// A zero-width range at the start of a document renders as nothing an editor's reader can
@@ -249,6 +260,19 @@ mod tests {
     fn reads_the_configured_sops_path() {
         let options = serde_json::json!({"sops": {"path": "/opt/bin/sops"}});
         assert_eq!(sops_path(Some(&options)).as_deref(), Some("/opt/bin/sops"));
+    }
+
+    #[test]
+    fn expands_a_leading_tilde() {
+        // SAFETY: single-threaded test process; no other thread reads the environment.
+        unsafe { std::env::set_var("HOME", "/home/someone") };
+        let options = serde_json::json!({"sops": {"path": "~/bin/sops"}});
+        assert_eq!(
+            sops_path(Some(&options)).as_deref(),
+            Some("/home/someone/bin/sops")
+        );
+        let absolute = serde_json::json!({"sops": {"path": "/usr/bin/sops"}});
+        assert_eq!(sops_path(Some(&absolute)).as_deref(), Some("/usr/bin/sops"));
     }
 
     #[test]
